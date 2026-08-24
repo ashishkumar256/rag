@@ -1,0 +1,7 @@
+chroma_db/
+test_pdfs/
+indexed_files.json
+__pycache__/
+*.pyc
+.git/
+README.md
