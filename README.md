@@ -1,118 +1,130 @@
-# RAG Pipeline - Setup & Run Guide
+# RAG Pipeline
 
-## Files in this project
+A local RAG (retrieval-augmented generation) system for querying a large PDF collection. Everything below is done through `docker compose` and `curl` — no Python setup on your machine, no CLI juggling.
+
+## Files
 
 | File | Purpose |
 |---|---|
-| `rag_pipeline.py` | The full pipeline: parse, chunk, embed, store, retrieve, answer |
-| `generate_test_pdfs.py` | Creates 20 synthetic test PDFs with known facts, for testing |
-| `test_pdfs/` | 20 generated PDFs + `_answer_key.json` (ground-truth facts) |
+| `docker-compose.yml` | Runs the whole thing as one service |
+| `Dockerfile` | Builds the image (Python + torch CPU + embedding model baked in) |
+| `app.py` | The HTTP API (upload, index, ask) |
+| `rag_pipeline.py` | Core logic: parsing, chunking, embedding, retrieval — imported by `app.py` |
+| `generate_test_pdfs.py` | Creates 20 synthetic test PDFs with known facts (optional, for testing) |
+| `test_pdfs/` | Those 20 test PDFs + `_answer_key.json` with the ground-truth facts |
 
-## 1. Install dependencies
-
-Requires Python 3.9+.
-
-```bash
-pip install pypdf sentence-transformers chromadb anthropic
-```
-
-First run will download the embedding model (~130MB) automatically -- that's normal, only happens once.
-
-## 2. Get an Anthropic API key
-
-Only needed for the *answering* step (retrieval works without it).
+## 1. One-time setup
 
 ```bash
-export ANTHROPIC_API_KEY="your-key-here"
+cp env.example .env
 ```
 
-Get a key at https://console.anthropic.com if you don't have one.
+Edit `.env`:
+- `ANTHROPIC_API_KEY` — required, get one at https://console.anthropic.com
+- `API_KEY` — pick any secret string; this protects your endpoints since anyone who can reach the server can otherwise trigger paid API calls
 
-## 3. Test with the 20 synthetic PDFs (recommended before your real 2000)
-
-The test PDFs are already generated in `test_pdfs/`. If you want to regenerate them:
+## 2. Start it
 
 ```bash
-python generate_test_pdfs.py
+docker compose up -d --build
 ```
 
-Then index them:
+First build takes a few minutes (downloads torch + the embedding model, baked into the image so it only happens once). `-d` runs it in the background; drop it to watch logs live.
+
+Check it's alive:
+```bash
+curl http://localhost:8000/health
+# {"status":"ok"}
+```
+
+## 3. Upload PDFs via curl
 
 ```bash
-python rag_pipeline.py index test_pdfs
+curl -X POST http://localhost:8000/upload \
+  -H "X-API-Key: $(grep API_KEY .env | cut -d= -f2)" \
+  -F "file=@test_pdfs/company_01.pdf"
 ```
 
-You'll see output like:
-```
-Indexing company_01.pdf...
-Indexing company_02.pdf...
-...
-Done. 187 new chunks indexed. 0 files unchanged and skipped.
+Repeat per file. To upload every test PDF in one go:
+```bash
+for f in test_pdfs/*.pdf; do
+  curl -s -X POST http://localhost:8000/upload \
+    -H "X-API-Key: $(grep API_KEY .env | cut -d= -f2)" \
+    -F "file=@$f" > /dev/null
+  echo "uploaded $f"
+done
 ```
 
-This creates a `chroma_db/` folder (your vector store) and `indexed_files.json` (tracks what's been indexed, for incremental runs).
+For your real 2000+ PDFs, looping curl calls one file at a time works but is slow for that volume — dropping the files directly into the `./pdfs` folder that `docker-compose.yml` mounts (it appears inside the container at `/app/pdfs` automatically) is faster for a big batch. Either path lands files in the same place; use whichever is more convenient for a given batch.
 
-Then ask a question. Open `test_pdfs/_answer_key.json` to see the real facts and pick one to test:
+## 4. Trigger indexing
 
 ```bash
-python rag_pipeline.py ask "What was Northwind Robotics's Q3 revenue in 2023?"
+curl -X POST http://localhost:8000/index \
+  -H "X-API-Key: $(grep API_KEY .env | cut -d= -f2)" \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
-Expected: an answer citing `company_01.pdf, page 2` with the correct dollar figure. Compare against `_answer_key.json` to confirm it's right, not just plausible-sounding.
-
-Try a few more:
-```bash
-python rag_pipeline.py ask "Who is the CEO of Bluepeak Logistics?"
-python rag_pipeline.py ask "Which company is headquartered in Nairobi?"
-python rag_pipeline.py ask "What is the revenue of a company that doesn't exist, like Acme Corp?"
-```
-
-That last one tests whether the model correctly says "not found" instead of hallucinating -- important to verify before trusting it on your real documents.
-
-## 4. Run on your real 2000+ PDFs
+Empty `{}` body indexes everything in the shared PDFs folder. Runs in the background so this returns immediately — check progress:
 
 ```bash
-python rag_pipeline.py index /path/to/your/pdf/folder
+curl http://localhost:8000/index/status
 ```
+```json
+{"state": "running", "detail": "Indexing /app/pdfs"}
+```
+Poll until `"state": "done"`.
 
-This will take a while the first time (expect anywhere from tens of minutes to a few hours depending on total page count and your CPU -- there's no API rate limit since embeddings run locally, so it's just raw compute time).
+Indexing is incremental — files already indexed (by content hash) are skipped on future `/index` calls, so re-running this after adding more PDFs only processes what's new.
 
-**Important:** the script skips PDFs whose content looks like a scanned image (very little extractable text) and prints a `[SKIP]` warning with the filename. Collect that list -- those files need OCR before they can be indexed. See the "Handling scanned PDFs" section below.
-
-Because of the hash-based cache (`indexed_files.json`), re-running `index` on the same folder later only processes new or changed files:
+## 5. Ask questions
 
 ```bash
-# add new PDFs to the folder, then just re-run -- unchanged files are skipped
-python rag_pipeline.py index /path/to/your/pdf/folder
+curl -X POST http://localhost:8000/ask \
+  -H "X-API-Key: $(grep API_KEY .env | cut -d= -f2)" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What was Northwind Robotics'\''s Q3 revenue in 2023?"}'
 ```
 
-Then query as usual:
+```json
+{
+  "answer": "According to company_01.pdf (page 2), Northwind Robotics reported Q3 2023 revenue of $69.1 million...",
+  "sources": [{"file": "company_01.pdf", "page": 2}]
+}
+```
+
+Check `test_pdfs/_answer_key.json` to confirm the answer matches the real embedded fact — that's how you verify retrieval is actually working, not just producing plausible-sounding text.
+
+## 6. Stop / restart
 
 ```bash
-python rag_pipeline.py ask "your real question here"
+docker compose down        # stops the container, keeps your data (./pdfs, ./chroma_db)
+docker compose up -d       # starts it again, no re-indexing needed
+docker compose up -d --build   # rebuild after changing app.py or rag_pipeline.py
 ```
 
-## 5. Handling scanned PDFs (if the [SKIP] warnings show up)
+Your indexed data lives in `./chroma_db` on your machine (created automatically), so it survives container restarts and rebuilds.
 
-```bash
-pip install pytesseract pdf2image
-# also requires the tesseract binary installed at the OS level:
-#   macOS:   brew install tesseract poppler
-#   Ubuntu:  sudo apt install tesseract-ocr poppler-utils
-```
+## Interactive docs
 
-This isn't wired into `rag_pipeline.py` yet by default since OCR is much slower and you likely don't want it running on all 2000 files automatically. Once you know which files are scanned (from the `[SKIP]` list), that's the next step to add -- happy to build that in when you get there.
+FastAPI auto-generates a testable API browser at `http://localhost:8000/docs` — useful if you'd rather click through requests than type curl commands.
 
-## 6. Tuning knobs (in `rag_pipeline.py`, top of file)
+## Tuning
+
+Open `rag_pipeline.py`, top of file:
 
 | Setting | Effect |
 |---|---|
-| `CHUNK_SIZE_WORDS` | Bigger = more context per chunk but less precise retrieval. Start at 500, adjust based on your document type. |
-| `TOP_K` | How many chunks get sent to the LLM per question. More = harder to miss the answer, but more noise. Start at 5. |
-| `EMBEDDING_MODEL` | Swap for a bigger model (e.g. `BAAI/bge-base-en-v1.5`) if retrieval quality feels off -- slower but more accurate. |
+| `CHUNK_SIZE_WORDS` | Bigger = more context per chunk, less precise retrieval. Default 500. |
+| `TOP_K` | How many chunks get sent to the LLM per question. Default 5. |
+| `EMBEDDING_MODEL` | Swap for a bigger model if retrieval quality feels off. |
+
+Changes require `docker compose up -d --build` to take effect.
 
 ## Troubleshooting
 
-- **"No indexed content found"** -- you ran `ask` before `index`, or indexed a different folder.
-- **Answers seem to ignore your PDFs** -- check the `[SKIP]` warnings from indexing; the file you're asking about may not have been indexed (likely scanned).
-- **Slow indexing** -- normal on CPU for large batches. If you have a GPU, sentence-transformers will use it automatically if `torch` with CUDA is installed.# rag
+- **`401 Unauthorized`** — missing or wrong `X-API-Key` header; check it matches `.env`.
+- **`404` on `/ask`** — nothing indexed yet, or indexing hasn't finished (check `/index/status`).
+- **PDF missing from answers** — check container logs (`docker compose logs -f`) for a `[SKIP]` warning at that filename; it likely looks like a scanned image with no extractable text and needs OCR (not yet wired in — say the word if you hit this and want it added).
+- **Build fails with "no space left on device"** — run `docker system prune -a --volumes` first; the CPU-only torch build in the Dockerfile should already keep the image small (~1–1.5GB) but leftover build cache from earlier attempts can still fill disk.

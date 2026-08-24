@@ -1,0 +1,12 @@
+services:
+  rag:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - API_KEY=${API_KEY}
+    volumes:
+      - ./pdfs:/app/pdfs
+      - ./chroma_db:/app/chroma_db
+    restart: unless-stopped

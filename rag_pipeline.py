@@ -26,7 +26,7 @@ EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 CHUNK_SIZE_WORDS = 500
 CHUNK_OVERLAP_WORDS = 50
 TOP_K = 5
-HASH_CACHE_FILE = "./indexed_files.json"  # tracks which files are already indexed
+HASH_CACHE_FILE = "./chroma_db/indexed_files.json"  # kept alongside the vector store so one volume/folder persists both
 
 # ---------------------------------------------------------------------------
 # Step 1: Parsing
@@ -121,6 +121,7 @@ def load_hash_cache() -> dict:
     return {}
 
 def save_hash_cache(cache: dict):
+    Path(HASH_CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
     Path(HASH_CACHE_FILE).write_text(json.dumps(cache, indent=2))
 
 
