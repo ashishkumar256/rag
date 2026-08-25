@@ -8,6 +8,8 @@ services:
       - LLM_KEY=${LLM_KEY}
       - LLM_MODEL=${LLM_MODEL}
       - API_KEY=${API_KEY}
+      - TOP_K=${TOP_K:-5}
+      - MAX_DISTANCE=${MAX_DISTANCE:-0.25}
     volumes:
       - ./pdfs:/app/pdfs
       - ./chroma_db:/app/chroma_db

@@ -26,8 +26,8 @@ COLLECTION_NAME = "pdf_chunks"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 CHUNK_SIZE_WORDS = 500
 CHUNK_OVERLAP_WORDS = 50
-TOP_K = 5
-MAX_DISTANCE = 0.45  # cosine distance cutoff; chunks less similar than this are dropped as noise, even if top_k hasn't been filled. Lower = stricter. Tune this against your own documents (see README "Tuning noise").
+TOP_K = int(os.environ.get("TOP_K", 5))
+MAX_DISTANCE = float(os.environ.get("MAX_DISTANCE", 0.25))  # cosine distance cutoff; chunks less similar than this are dropped as noise, even if top_k hasn't been filled. Lower = stricter. Tuned empirically via eval_threshold.py against the 20-PDF test set -- 0.20-0.25 was perfectly clean (20/20, zero noise), 0.30+ started leaking irrelevant sources. Re-run eval_threshold.py against your real documents once indexed; this exact number is specific to the synthetic test corpus and likely needs recalibrating for your actual PDFs. Override via .env (TOP_K, MAX_DISTANCE) or per-request in /ask.
 HASH_CACHE_FILE = "./chroma_db/indexed_files.json"  # kept alongside the vector store so one volume/folder persists both
 
 # Which LLM answers the question, once relevant chunks are retrieved.
@@ -289,7 +289,9 @@ def answer_question(question: str, top_k: int = TOP_K, max_distance: float = MAX
 
     prompt = f"""Answer the question using ONLY the context below.
 If the context doesn't contain the answer, say so clearly -- don't guess.
-Cite sources by filename and page number.
+Do NOT include filenames, page numbers, or source citations in your answer --
+just answer the question directly in plain language. Source attribution is
+handled separately and shown alongside your answer.
 
 Context:
 {context}
