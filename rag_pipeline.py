@@ -35,7 +35,7 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "anthropic").lower()
 LLM_MODEL_OVERRIDE = os.environ.get("LLM_MODEL")  # optional, skips the default below
 DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-6",
-    "gemini": "gemini-2.0-flash",
+    "gemini": "gemini-3.1-flash-lite",
 }
 
 # ---------------------------------------------------------------------------
