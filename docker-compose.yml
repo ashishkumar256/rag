@@ -4,9 +4,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - LLM_KEY=${LLM_KEY}
       - API_KEY=${API_KEY}
     volumes:
-      - ./test_pdfs:/app/pdfs
+      - ./pdfs:/app/pdfs
       - ./chroma_db:/app/chroma_db
     restart: unless-stopped

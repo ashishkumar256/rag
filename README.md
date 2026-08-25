@@ -20,8 +20,14 @@ cp env.example .env
 ```
 
 Edit `.env`:
-- `ANTHROPIC_API_KEY` — required, get one at https://console.anthropic.com
+- `LLM_PROVIDER` — `anthropic` (default) or `gemini`
+- `LLM_KEY` — API key matching whichever provider you picked ([Anthropic console](https://console.anthropic.com) / [Google AI Studio](https://aistudio.google.com/apikey))
 - `API_KEY` — pick any secret string; this protects your endpoints since anyone who can reach the server can otherwise trigger paid API calls
+
+To switch providers later, just edit `.env` and restart:
+```bash
+docker compose up -d   # picks up the new .env, no rebuild needed
+```
 
 ## 2. Start it
 
@@ -119,6 +125,7 @@ Open `rag_pipeline.py`, top of file:
 | `CHUNK_SIZE_WORDS` | Bigger = more context per chunk, less precise retrieval. Default 500. |
 | `TOP_K` | How many chunks get sent to the LLM per question. Default 5. |
 | `EMBEDDING_MODEL` | Swap for a bigger model if retrieval quality feels off. |
+| `LLM_PROVIDER` / `LLM_KEY` / `LLM_MODEL` (in `.env`, not `rag_pipeline.py`) | Which LLM answers questions, and with which model. See `env.example`. |
 
 Changes require `docker compose up -d --build` to take effect.
 

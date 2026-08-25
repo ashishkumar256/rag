@@ -9,6 +9,7 @@ See README.md for setup instructions.
 """
 
 import sys
+import os
 import hashlib
 import json
 from pathlib import Path
@@ -27,6 +28,15 @@ CHUNK_SIZE_WORDS = 500
 CHUNK_OVERLAP_WORDS = 50
 TOP_K = 5
 HASH_CACHE_FILE = "./chroma_db/indexed_files.json"  # kept alongside the vector store so one volume/folder persists both
+
+# Which LLM answers the question, once relevant chunks are retrieved.
+# Set via .env: LLM_PROVIDER=anthropic (default) or LLM_PROVIDER=gemini
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "anthropic").lower()
+LLM_MODEL_OVERRIDE = os.environ.get("LLM_MODEL")  # optional, skips the default below
+DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-4-6",
+    "gemini": "gemini-2.0-flash",
+}
 
 # ---------------------------------------------------------------------------
 # Step 1: Parsing
@@ -210,10 +220,45 @@ def retrieve(question: str, top_k: int = TOP_K) -> list[dict]:
     return chunks
 
 
-def answer_question(question: str, top_k: int = TOP_K) -> str:
-    import anthropic
-    llm_client = anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from environment
+def generate_answer(prompt: str) -> str:
+    """Sends the prompt to whichever LLM is configured via LLM_PROVIDER.
+    Both providers get the exact same prompt -- only the API call differs,
+    so switching providers never changes retrieval quality, only generation."""
+    key = os.environ.get("LLM_KEY") or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not key:
+        raise RuntimeError(
+            "No LLM API key found. Set LLM_KEY (and LLM_PROVIDER) in your .env file."
+        )
 
+    model = LLM_MODEL_OVERRIDE or DEFAULT_MODELS.get(LLM_PROVIDER)
+    if model is None:
+        raise ValueError(
+            f"Unknown LLM_PROVIDER '{LLM_PROVIDER}'. Use 'anthropic' or 'gemini'."
+        )
+
+    if LLM_PROVIDER == "anthropic":
+        import anthropic
+        client = anthropic.Anthropic(api_key=key)
+        response = client.messages.create(
+            model=model,
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text
+
+    elif LLM_PROVIDER == "gemini":
+        from google import genai
+        client = genai.Client(api_key=key)
+        response = client.models.generate_content(model=model, contents=prompt)
+        return response.text
+
+    else:
+        raise ValueError(
+            f"Unknown LLM_PROVIDER '{LLM_PROVIDER}'. Use 'anthropic' or 'gemini'."
+        )
+
+
+def answer_question(question: str, top_k: int = TOP_K) -> str:
     chunks = retrieve(question, top_k)
     if not chunks:
         return "No indexed content found. Did you run 'index' first?"
@@ -232,12 +277,7 @@ Context:
 
 Question: {question}"""
 
-    response = llm_client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=1000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text
+    return generate_answer(prompt)
 
 
 # ---------------------------------------------------------------------------
