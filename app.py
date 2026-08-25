@@ -51,6 +51,7 @@ _lock = threading.Lock()
 class AskRequest(BaseModel):
     question: str
     top_k: int = rag.TOP_K
+    max_distance: float = rag.MAX_DISTANCE  # lower = stricter noise filtering
 
 
 class AskResponse(BaseModel):
@@ -85,12 +86,15 @@ async def upload_pdf(file: UploadFile = File(...), x_api_key: str | None = Heade
 def ask(req: AskRequest, x_api_key: str | None = Header(default=None)):
     check_auth(x_api_key)
 
-    chunks = rag.retrieve(req.question, top_k=req.top_k)
+    chunks = rag.retrieve(req.question, top_k=req.top_k, max_distance=req.max_distance)
     if not chunks:
-        raise HTTPException(status_code=404, detail="No indexed content found. Call /index first.")
+        raise HTTPException(status_code=404,
+                             detail="Nothing indexed, or nothing passed the similarity threshold "
+                                    "for this question. Try raising max_distance or check /index/status.")
 
-    answer_text = rag.answer_question(req.question, top_k=req.top_k)
-    sources = [{"file": Path(c["source"]).name, "page": c["page"]} for c in chunks]
+    answer_text = rag.answer_question(req.question, top_k=req.top_k, max_distance=req.max_distance)
+    sources = [{"file": Path(c["source"]).name, "page": c["page"], "distance": round(c["distance"], 3)}
+               for c in chunks]
     return {"answer": answer_text, "sources": sources}
 
 

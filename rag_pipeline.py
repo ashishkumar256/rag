@@ -27,6 +27,7 @@ EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 CHUNK_SIZE_WORDS = 500
 CHUNK_OVERLAP_WORDS = 50
 TOP_K = 5
+MAX_DISTANCE = 0.45  # cosine distance cutoff; chunks less similar than this are dropped as noise, even if top_k hasn't been filled. Lower = stricter. Tune this against your own documents (see README "Tuning noise").
 HASH_CACHE_FILE = "./chroma_db/indexed_files.json"  # kept alongside the vector store so one volume/folder persists both
 
 # Which LLM answers the question, once relevant chunks are retrieved.
@@ -116,7 +117,14 @@ def get_collection():
     global _client, _collection
     if _collection is None:
         _client = chromadb.PersistentClient(path=CHROMA_PATH)
-        _collection = _client.get_or_create_collection(name=COLLECTION_NAME)
+        # Explicit cosine space: distance = 1 - similarity, so 0 = identical
+        # meaning, 1 = unrelated. Without this, Chroma defaults to L2 distance,
+        # which works fine for ranking but isn't as intuitive to set a
+        # noise-filtering threshold against.
+        _collection = _client.get_or_create_collection(
+            name=COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
     return _collection
 
 
@@ -204,19 +212,25 @@ def index_folder(folder: str):
 # Step 4 + 5: Retrieval + generation
 # ---------------------------------------------------------------------------
 
-def retrieve(question: str, top_k: int = TOP_K) -> list[dict]:
+def retrieve(question: str, top_k: int = TOP_K, max_distance: float = MAX_DISTANCE) -> list[dict]:
     model = get_model()
     collection = get_collection()
 
     query_embedding = model.encode([question], normalize_embeddings=True).tolist()
-    results = collection.query(query_embeddings=query_embedding, n_results=top_k)
+    results = collection.query(
+        query_embeddings=query_embedding,
+        n_results=top_k,
+        include=["documents", "metadatas", "distances"],
+    )
 
     if not results["documents"] or not results["documents"][0]:
         return []
 
     chunks = []
-    for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-        chunks.append({"text": doc, "source": meta["source"], "page": meta["page"]})
+    for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
+        if dist > max_distance:
+            continue  # too dissimilar to the question -- treat as noise, not a real match
+        chunks.append({"text": doc, "source": meta["source"], "page": meta["page"], "distance": dist})
     return chunks
 
 
@@ -258,10 +272,15 @@ def generate_answer(prompt: str) -> str:
         )
 
 
-def answer_question(question: str, top_k: int = TOP_K) -> str:
-    chunks = retrieve(question, top_k)
+def answer_question(question: str, top_k: int = TOP_K, max_distance: float = MAX_DISTANCE) -> str:
+    chunks = retrieve(question, top_k, max_distance)
     if not chunks:
-        return "No indexed content found. Did you run 'index' first?"
+        collection = get_collection()
+        if collection.count() == 0:
+            return "No indexed content found. Did you run 'index' first?"
+        return ("No sufficiently relevant content found for this question "
+                "(everything retrieved was below the similarity threshold). "
+                "Try rephrasing, or lower MAX_DISTANCE if this keeps happening on valid questions.")
 
     context = "\n\n".join(
         f"[Source: {Path(c['source']).name}, page {c['page']}]\n{c['text']}"
