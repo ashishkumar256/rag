@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 FROM python:3.11-slim-bookworm
 
-LABEL description="All-in-one: http.server (PDFs) + LangChain/Chroma ingest + search API"
+LABEL description="Lightweight RAG: http.server + LangChain/Chroma (fastembed, no torch)"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential curl \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -12,7 +12,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+    && rm -rf /root/.cache/pip
 
 COPY ingest.py serve_pdfs.py search_api.py ./
 
@@ -21,7 +21,7 @@ RUN mkdir -p /data/pdfs /data/chroma /data/hf_cache
 ENV PDF_DIR=/data/pdfs \
     CHROMA_DIR=/data/chroma \
     COLLECTION_NAME=db_providers \
-    EMBED_MODEL=all-MiniLM-L6-v2 \
+    EMBED_MODEL=BAAI/bge-small-en-v1.5 \
     CHUNK_SIZE=800 \
     CHUNK_OVERLAP=150 \
     HOST=0.0.0.0 \
