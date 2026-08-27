@@ -1,36 +1,34 @@
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1
+FROM python:3.11-slim-bookworm
 
-# build-essential: chromadb's hnswlib dependency sometimes needs to compile
-# from source if no prebuilt wheel matches the platform (e.g. on arm64).
+LABEL description="All-in-one: http.server (PDFs) + LangChain/Chroma ingest + search API"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+        build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install CPU-only torch FIRST and explicitly. Without this, pip resolves
-# sentence-transformers' torch dependency to the default CUDA build, which
-# is 5-6GB and is very likely what exhausted your disk space. The CPU-only
-# wheel is ~200MB and is all we need since this pipeline never touches a GPU.
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-
-# Install remaining deps -- pip will see torch is already satisfied and skip it.
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
-# Pre-download the embedding model at build time instead of on first run.
-# Adds a few hundred MB to the image but means `docker run ... ask ...`
-# doesn't silently pause to download a model the first time it's used.
-RUN python -c "from sentence_transformers import SentenceTransformer; \
-    SentenceTransformer('BAAI/bge-small-en-v1.5')"
+COPY ingest.py serve_pdfs.py search_api.py ./
 
-COPY rag_pipeline.py generate_test_pdfs.py app.py ./
+RUN mkdir -p /data/pdfs /data/chroma /data/hf_cache
 
-# Mount points (created here so bind mounts have somewhere to land):
-#   /app/pdfs      -> your source PDFs (read-only is fine)
-#   /app/chroma_db -> persisted vector store + incremental-index cache
-RUN mkdir -p /app/pdfs /app/chroma_db
+ENV PDF_DIR=/data/pdfs \
+    CHROMA_DIR=/data/chroma \
+    COLLECTION_NAME=db_providers \
+    EMBED_MODEL=all-MiniLM-L6-v2 \
+    CHUNK_SIZE=800 \
+    CHUNK_OVERLAP=150 \
+    HOST=0.0.0.0 \
+    PDF_PORT=8080 \
+    PORT=8000 \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/data/hf_cache \
+    TRANSFORMERS_CACHE=/data/hf_cache
 
-EXPOSE 8000
-
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sleep", "infinity"]

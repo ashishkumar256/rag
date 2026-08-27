@@ -1,0 +1,93 @@
+###############################################################################
+# All-in-one Docker Compose
+# - pdf-server  : Python stdlib http.server → serves the 20 PDFs on :8080
+# - ingest      : LangChain parse → chunk → embed → ChromaDB (one-shot)
+# - search      : tiny FastAPI query service on :8000 (optional convenience)
+###############################################################################
+
+services:
+  # --------------------------------------------------------------------------
+  # 1. Static PDF server (pure Python http.server)
+  # --------------------------------------------------------------------------
+  pdf-server:
+    build: .
+    image: rag-db-providers:latest
+    container_name: pdf-http-server
+    command: ["python", "serve_pdfs.py", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../db_proposals:/data/pdfs:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # --------------------------------------------------------------------------
+  # 2. Ingest job (LangChain + ChromaDB)
+  #    Runs once on `docker compose up` then exits.
+  #    Re-run anytime with:  docker compose run --rm ingest
+  #    Force rebuild vectors: docker compose run --rm ingest python ingest.py --force
+  # --------------------------------------------------------------------------
+  ingest:
+    image: rag-db-providers:latest
+    container_name: rag-ingest
+    depends_on:
+      pdf-server:
+        condition: service_started
+    environment:
+      PDF_DIR: /data/pdfs
+      CHROMA_DIR: /data/chroma
+      COLLECTION_NAME: db_providers
+      EMBED_MODEL: all-MiniLM-L6-v2
+      CHUNK_SIZE: "800"
+      CHUNK_OVERLAP: "150"
+      HF_HOME: /data/hf_cache
+      TRANSFORMERS_CACHE: /data/hf_cache
+    volumes:
+      - ../db_proposals:/data/pdfs:ro
+      - chroma_data:/data/chroma
+      - hf_cache:/data/hf_cache
+    entrypoint: ["python", "ingest.py"]
+    restart: "no"
+
+  # --------------------------------------------------------------------------
+  # 3. Lightweight search API (optional but convenient)
+  #    GET  /health
+  #    GET  /search?q=...&k=5
+  #    POST /search  {"query": "...", "k": 5}
+  # --------------------------------------------------------------------------
+  search:
+    image: rag-db-providers:latest
+    container_name: rag-search
+    depends_on:
+      ingest:
+        condition: service_completed_successfully
+    command: ["python", "search_api.py"]
+    ports:
+      - "8000:8000"
+    environment:
+      CHROMA_DIR: /data/chroma
+      COLLECTION_NAME: db_providers
+      EMBED_MODEL: all-MiniLM-L6-v2
+      HF_HOME: /data/hf_cache
+      TRANSFORMERS_CACHE: /data/hf_cache
+      HOST: "0.0.0.0"
+      PORT: "8000"
+    volumes:
+      - chroma_data:/data/chroma:ro
+      - hf_cache:/data/hf_cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  chroma_data:
+  hf_cache:

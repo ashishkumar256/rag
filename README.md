@@ -1,137 +1,100 @@
-# RAG Pipeline
+# All-in-one RAG stack for Database Provider PDFs
 
-A local RAG (retrieval-augmented generation) system for querying a large PDF collection. Everything below is done through `docker compose` and `curl` — no Python setup on your machine, no CLI juggling.
+Single `docker-compose.yaml` that brings up:
 
-## Files
+| Service       | Port  | Role                                      |
+|---------------|-------|-------------------------------------------|
+| `pdf-server`  | 8080  | Python **stdlib http.server** serving PDFs |
+| `ingest`      | –     | LangChain → chunk → embed → **ChromaDB** (one-shot) |
+| `search`      | 8000  | Lightweight search API over the vectors   |
 
-| File | Purpose |
-|---|---|
-| `docker-compose.yml` | Runs the whole thing as one service |
-| `Dockerfile` | Builds the image (Python + torch CPU + embedding model baked in) |
-| `app.py` | The HTTP API (upload, index, ask) |
-| `rag_pipeline.py` | Core logic: parsing, chunking, embedding, retrieval — imported by `app.py` |
-| `generate_test_pdfs.py` | Creates 20 synthetic test PDFs with known facts (optional, for testing) |
-| `test_pdfs/` | Those 20 test PDFs + `_answer_key.json` with the ground-truth facts |
+---
 
-## 1. One-time setup
+## Start everything
 
 ```bash
-cp env.example .env
+cd rag_simple
+docker compose up --build -d
 ```
 
-Edit `.env`:
-- `LLM_PROVIDER` — `anthropic` (default) or `gemini`
-- `LLM_KEY` — API key matching whichever provider you picked ([Anthropic console](https://console.anthropic.com) / [Google AI Studio](https://aistudio.google.com/apikey))
-- `API_KEY` — pick any secret string; this protects your endpoints since anyone who can reach the server can otherwise trigger paid API calls
+What happens:
 
-To switch providers later, just edit `.env` and restart:
+1. `pdf-server` starts immediately → http://localhost:8080/
+2. `ingest` runs once (downloads embedding model the first time, parses all 20 PDFs, stores vectors)
+3. `search` starts after ingest finishes → http://localhost:8000/
+
+Follow progress:
+
 ```bash
-docker compose up -d   # picks up the new .env, no rebuild needed
+docker compose logs -f
 ```
 
-## 2. Start it
+---
 
+## Endpoints
+
+**PDF server (http.server)**
+- http://localhost:8080/
+- http://localhost:8080/01_aws_rds_aurora.pdf
+- http://localhost:8080/04_mongodb_atlas.pdf
+- …
+
+**Search API**
 ```bash
-docker compose up -d --build
-```
+# Health
+curl http://localhost:8000/health | jq
 
-First build takes a few minutes (downloads torch + the embedding model, baked into the image so it only happens once). `-d` runs it in the background; drop it to watch logs live.
+# Search
+curl "http://localhost:8000/search?q=MongoDB%20Atlas%20SLA%20encryption&k=3" | jq
 
-Check it's alive:
-```bash
-curl http://localhost:8000/health
-# {"status":"ok"}
-```
-
-## 3. Upload PDFs via curl
-
-```bash
-curl -X POST http://localhost:8000/upload \
-  -H "X-API-Key: $(grep API_KEY .env | cut -d= -f2)" \
-  -F "file=@test_pdfs/company_01.pdf"
-```
-
-Repeat per file. To upload every test PDF in one go:
-```bash
-for f in test_pdfs/*.pdf; do
-  curl -s -X POST http://localhost:8000/upload \
-    -H "X-API-Key: $(grep API_KEY .env | cut -d= -f2)" \
-    -F "file=@$f" > /dev/null
-  echo "uploaded $f"
-done
-```
-
-For your real 2000+ PDFs, looping curl calls one file at a time works but is slow for that volume — dropping the files directly into the `./pdfs` folder that `docker-compose.yml` mounts (it appears inside the container at `/app/pdfs` automatically) is faster for a big batch. Either path lands files in the same place; use whichever is more convenient for a given batch.
-
-## 4. Trigger indexing
-
-```bash
-curl -X POST http://localhost:8000/index \
-  -H "X-API-Key: $(grep API_KEY .env | cut -d= -f2)" \
+# POST
+curl -X POST http://localhost:8000/search \
   -H "Content-Type: application/json" \
-  -d '{}'
+  -d '{"query": "customer managed encryption keys", "k": 5}' | jq
 ```
 
-Empty `{}` body indexes everything in the shared PDFs folder. Runs in the background so this returns immediately — check progress:
+---
+
+## Re-ingest / force rebuild
 
 ```bash
-curl http://localhost:8000/index/status
-```
-```json
-{"state": "running", "detail": "Indexing /app/pdfs"}
-```
-Poll until `"state": "done"`.
+# Normal (skips files already present)
+docker compose run --rm ingest
 
-Indexing is incremental — files already indexed (by content hash) are skipped on future `/index` calls, so re-running this after adding more PDFs only processes what's new.
+# Wipe collection and re-ingest everything
+docker compose run --rm ingest python ingest.py --force
+```
 
-## 5. Ask questions
+---
+
+## Local (without Docker)
 
 ```bash
-curl -X POST http://localhost:8000/ask \
-  -H "X-API-Key: $(grep API_KEY .env | cut -d= -f2)" \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What was Northwind Robotics'\''s Q3 revenue in 2023?"}'
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+export PDF_DIR=../db_proposals
+export CHROMA_DIR=./chroma_data
+
+# Terminal 1
+python serve_pdfs.py --port 8080
+
+# Terminal 2
+python ingest.py
+
+# Terminal 3
+python search_api.py
 ```
 
-```json
-{
-  "answer": "According to company_01.pdf (page 2), Northwind Robotics reported Q3 2023 revenue of $69.1 million...",
-  "sources": [{"file": "company_01.pdf", "page": 2}]
-}
-```
+---
 
-Check `test_pdfs/_answer_key.json` to confirm the answer matches the real embedded fact — that's how you verify retrieval is actually working, not just producing plausible-sounding text.
+## Pipeline details
 
-## 6. Stop / restart
-
-```bash
-docker compose down        # stops the container, keeps your data (./pdfs, ./chroma_db)
-docker compose up -d       # starts it again, no re-indexing needed
-docker compose up -d --build   # rebuild after changing app.py or rag_pipeline.py
-```
-
-Your indexed data lives in `./chroma_db` on your machine (created automatically), so it survives container restarts and rebuilds.
-
-## Interactive docs
-
-FastAPI auto-generates a testable API browser at `http://localhost:8000/docs` — useful if you'd rather click through requests than type curl commands.
-
-## Tuning
-
-Open `rag_pipeline.py`, top of file:
-
-| Setting | Effect |
-|---|---|
-| `CHUNK_SIZE_WORDS` | Bigger = more context per chunk, less precise retrieval. Default 500. |
-| `TOP_K` | How many chunks get sent to the LLM per question. Default 5. |
-| `EMBEDDING_MODEL` | Swap for a bigger model if retrieval quality feels off. |
-| `LLM_PROVIDER` / `LLM_KEY` / `LLM_MODEL` (in `.env`, not `rag_pipeline.py`) | Which LLM answers questions, and with which model. See `env.example`. |
-
-Changes require `docker compose up -d --build` to take effect.
-
-## Troubleshooting
-
-- **`401 Unauthorized`** — missing or wrong `X-API-Key` header; check it matches `.env`.
-- **`404` on `/ask`** — nothing indexed yet, or indexing hasn't finished (check `/index/status`).
-- **PDF missing from answers** — check container logs (`docker compose logs -f`) for a `[SKIP]` warning at that filename; it likely looks like a scanned image with no extractable text and needs OCR (not yet wired in — say the word if you hit this and want it added).
-- **Build fails with "no space left on device"** — run `docker system prune -a --volumes` first; the CPU-only torch build in the Dockerfile should already keep the image small (~1–1.5GB) but leftover build cache from earlier attempts can still fill disk.
+| Step              | Tool |
+|-------------------|------|
+| Load PDF pages    | `langchain_community.document_loaders.PyPDFLoader` |
+| Chunk             | `RecursiveCharacterTextSplitter` (800 / 150) |
+| Embed             | `sentence-transformers` (`all-MiniLM-L6-v2`) |
+| Vector store      | `langchain_chroma.Chroma` → persistent ChromaDB |
+| Static file serve | Python stdlib `http.server` |
