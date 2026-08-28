@@ -1,4 +1,3 @@
-# Lightweight stack – avoids full torch where possible
 chromadb==0.5.23
 pypdf==5.1.0
 langchain==0.3.13
@@ -9,5 +8,4 @@ fastapi==0.115.6
 uvicorn[standard]==0.32.1
 pydantic==2.10.3
 numpy==1.26.4
-# Use fastembed (ONNX) instead of sentence-transformers + torch → huge space saving
 fastembed==0.4.2
