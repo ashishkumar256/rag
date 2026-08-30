@@ -43,6 +43,7 @@ CHUNK_OVERLAP = int(os.environ["CHUNK_OVERLAP"])
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
 DEFAULT_TOP_K = int(os.environ["DEFAULT_TOP_K"])
+DEFAULT_DEBUG = os.environ.get("DEBUG", "false").strip().lower() in ("1", "true", "yes", "on")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("rag")
@@ -168,6 +169,7 @@ def run_index(force: bool = False) -> None:
             return
 
         if force:
+            index_status["message"] = "Force=true: deleting existing collection..."
             try:
                 client = get_chroma_client()
                 client.delete_collection(COLLECTION_NAME)
@@ -176,7 +178,24 @@ def run_index(force: bool = False) -> None:
             except Exception as e:
                 log.warning("Could not delete collection: %s", e)
 
-        vs = get_vectorstore()
+        # This step can take a while on first run (model download)
+        index_status["message"] = f"Loading embedding model ({EMBED_MODEL}) and connecting to Chroma..."
+        log.info(index_status["message"])
+        try:
+            vs = get_vectorstore()
+        except Exception as e:
+            index_status.update({
+                "status": "error",
+                "message": f"Failed to init vectorstore/embedder: {e}",
+                "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "errors": [str(e)],
+            })
+            log.exception("get_vectorstore failed")
+            return
+
+        index_status["message"] = "Embedding model ready; starting PDF loop"
+        log.info(index_status["message"])
+
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=CHUNK_SIZE,
             chunk_overlap=CHUNK_OVERLAP,
@@ -239,7 +258,7 @@ class IndexRequest(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(..., min_length=1, description="Natural language question")
-    k: int = Field(DEFAULT_TOP_K, ge=1, le=30, description="Number of chunks to retrieve")
+    k: int | None = Field(None, ge=1, le=30, description="Number of chunks to retrieve (optional)")
 
 
 # ---------- Routes ----------
@@ -306,23 +325,40 @@ def ask(body: AskRequest):
     """
     Natural language question → retrieve top matching chunks from ChromaDB.
     Ready for later LLM integration (chunks are returned as context).
+
+    Rank / score:
+      - rank  = 1-based position after sorting by distance ascending (best match first)
+      - score = approx similarity = 1 - cosine_distance (higher is better, ~0..1)
+        Chroma is configured with hnsw space cosine; LangChain returns distance.
     """
     question = body.question.strip()
     if not question:
         raise HTTPException(status_code=400, detail="question must not be empty")
 
+    # Use body.k when provided; otherwise DEFAULT_TOP_K from env
+    k_was_passed = body.k is not None
+    k = body.k if k_was_passed else DEFAULT_TOP_K
+
     try:
         vs = get_vectorstore()
-        results = vs.similarity_search_with_score(question, k=body.k)
+        results = vs.similarity_search_with_score(question, k=k)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Search failed: {e}")
 
     contexts = []
     for rank, (doc, dist) in enumerate(results, 1):
         meta = doc.metadata or {}
+        # LangChain+Chroma cosine: distance is cosine distance in [0, 2] typically;
+        # convert to a similarity-like score where higher = more relevant.
+        try:
+            dist_f = float(dist)
+        except Exception:
+            dist_f = 0.0
+        score = round(1.0 - dist_f, 4) if dist_f <= 1.0 else round(float(1.0 / (1.0 + dist_f)), 4)
+
         contexts.append({
             "rank": rank,
-            "score": round(float(1.0 - dist) if dist <= 1 else float(dist), 4),
+            "score": score,
             "text": doc.page_content,
             "source_file": meta.get("source_file"),
             "company_slug": meta.get("company_slug"),
@@ -330,14 +366,18 @@ def ask(body: AskRequest):
             "chunk_index": meta.get("chunk_index"),
         })
 
-    return {
-        "question": question,
-        "k": body.k,
+    resp = {
         "contexts": contexts,
-        # Placeholder for future LLM answer
         "answer": None,
-        "note": "Retrieval only. LLM answer integration can be added later.",
     }
+
+    if DEFAULT_DEBUG:
+        resp["question"] = question
+        resp["k"] = k
+    elif k_was_passed:
+        resp["k"] = k
+
+    return resp
 
 
 @app.get("/documents")

@@ -49,6 +49,7 @@ services:
       HOST: ${HOST}
       PORT: ${PORT}
       PDF_PORT: ${PDF_PORT}
+      DEBUG: ${DEBUG}
     volumes:
       - ./db_proposals:/data/pdfs:ro
       - ./hf_cache:/data/hf_cache
