@@ -1,24 +1,19 @@
 ###############################################################################
-# Two-container stack
-# 1. chromadb  – official Chroma vector database (data bind-mounted to host)
-# 2. rag       – http.server (PDFs) + LangChain parse/chunk/embed/store + search API
+# .env is the single source of truth for configurable values.
+# Compose auto-loads .env and substitutes ${VAR} below.
 ###############################################################################
 
 services:
-  # --------------------------------------------------------------------------
-  # 1. ChromaDB (vector store)
-  # --------------------------------------------------------------------------
   chromadb:
     image: chromadb/chroma:0.5.23
     container_name: chromadb
     ports:
-      - "8001:8000"          # host:8001 → container:8000
+      - "8001:8000"
     environment:
       IS_PERSISTENT: "TRUE"
       ANONYMIZED_TELEMETRY: "FALSE"
       PERSIST_DIRECTORY: /chroma/chroma
     volumes:
-      # Bind-mount host folder so data is visible & survives container removal
       - ./chroma_data:/chroma/chroma
     restart: unless-stopped
     healthcheck:
@@ -28,9 +23,6 @@ services:
       retries: 5
       start_period: 10s
 
-  # --------------------------------------------------------------------------
-  # 2. RAG service
-  # --------------------------------------------------------------------------
   rag:
     build: .
     image: rag-db-providers:latest
@@ -39,21 +31,24 @@ services:
       chromadb:
         condition: service_healthy
     ports:
-      - "8080:8080"          # PDF static server
-      - "8000:8000"          # Search / index API
+      - "8080:8080"
+      - "8000:8000"
     environment:
+      # Fixed for this compose network / paths
       PDF_DIR: /data/pdfs
       CHROMA_HOST: chromadb
       CHROMA_PORT: "8000"
-      COLLECTION_NAME: db_providers
-      EMBED_MODEL: BAAI/bge-small-en-v1.5
-      CHUNK_SIZE: "800"
-      CHUNK_OVERLAP: "150"
-      HOST: "0.0.0.0"
-      PORT: "8000"
-      PDF_PORT: "8080"
       HF_HOME: /data/hf_cache
       TRANSFORMERS_CACHE: /data/hf_cache
+      # From .env (single source of truth)
+      COLLECTION_NAME: ${COLLECTION_NAME}
+      EMBED_MODEL: ${EMBED_MODEL}
+      CHUNK_SIZE: ${CHUNK_SIZE}
+      CHUNK_OVERLAP: ${CHUNK_OVERLAP}
+      DEFAULT_TOP_K: ${DEFAULT_TOP_K}
+      HOST: ${HOST}
+      PORT: ${PORT}
+      PDF_PORT: ${PDF_PORT}
     volumes:
       - ./db_proposals:/data/pdfs:ro
       - ./hf_cache:/data/hf_cache

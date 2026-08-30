@@ -32,16 +32,17 @@ import uvicorn
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-PDF_DIR = Path(os.getenv("PDF_DIR", "/data/pdfs"))
-CHROMA_HOST = os.getenv("CHROMA_HOST", "chromadb")
-CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
-COLLECTION_NAME = os.getenv("COLLECTION_NAME", "db_providers")
-EMBED_MODEL = os.getenv("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "800"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
-HOST = os.getenv("HOST", "0.0.0.0")
-PORT = int(os.getenv("PORT", "8000"))
-DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "5"))
+PDF_DIR = Path(os.environ["PDF_DIR"] if "PDF_DIR" in os.environ else "/data/pdfs")
+CHROMA_HOST = os.environ.get("CHROMA_HOST", "chromadb")
+CHROMA_PORT = int(os.environ.get("CHROMA_PORT", "8000"))
+# Tunables — expected from environment (.env via docker-compose)
+COLLECTION_NAME = os.environ["COLLECTION_NAME"]
+EMBED_MODEL = os.environ["EMBED_MODEL"]
+CHUNK_SIZE = int(os.environ["CHUNK_SIZE"])
+CHUNK_OVERLAP = int(os.environ["CHUNK_OVERLAP"])
+HOST = os.environ.get("HOST", "0.0.0.0")
+PORT = int(os.environ.get("PORT", "8000"))
+DEFAULT_TOP_K = int(os.environ["DEFAULT_TOP_K"])
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("rag")

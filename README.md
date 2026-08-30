@@ -7,6 +7,22 @@
 
 ---
 
+## Config (`.env` → injected by Docker Compose `env_file`)
+
+Edit `rag_simple/.env` to change defaults:
+
+```env
+DEFAULT_TOP_K=5
+CHUNK_SIZE=800
+CHUNK_OVERLAP=150
+EMBED_MODEL=BAAI/bge-small-en-v1.5
+COLLECTION_NAME=db_providers
+```
+
+`k` in `/ask` falls back to `DEFAULT_TOP_K` when omitted.
+
+---
+
 ## Start
 
 ```bash
