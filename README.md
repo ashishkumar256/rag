@@ -1,9 +1,9 @@
 # Two-container RAG stack
 
-| Container   | Image / Role                                      | Ports      |
-|-------------|---------------------------------------------------|------------|
-| **chromadb**| Official ChromaDB vector database                 | 8001→8000  |
-| **rag**     | http.server (PDFs) + LangChain parse/chunk/embed + search API | 8080 (PDFs), 8000 (API) |
+| Container    | Role                                              | Ports        |
+|--------------|---------------------------------------------------|--------------|
+| **chromadb** | Official ChromaDB vector database                 | 8001 → 8000  |
+| **rag**      | http.server (PDFs) + LangChain index + search API | 8080, 8000   |
 
 ---
 
@@ -14,30 +14,62 @@ cd rag_simple
 docker compose up --build -d
 ```
 
-- PDFs:     http://localhost:8080/
-- API:      http://localhost:8000/
-- Chroma:   http://localhost:8001/
+---
 
-On first start the `rag` container auto-ingests all PDFs into Chroma.
+## Index PDFs into ChromaDB
+
+```bash
+# Start indexing (background)
+curl -X POST http://localhost:8000/index \
+  -H "Content-Type: application/json" \
+  -d '{"force": false}'
+
+# Force full re-index (drops collection first)
+curl -X POST http://localhost:8000/index \
+  -H "Content-Type: application/json" \
+  -d '{"force": true}'
+
+# Poll status
+curl http://localhost:8000/index/status | jq
+```
+
+Example `/index/status` response while running:
+
+```json
+{
+  "status": "running",
+  "message": "Indexing started",
+  "started_at": "2026-08-29T05:40:00Z",
+  "finished_at": null,
+  "force": false,
+  "total_pdfs": 20,
+  "docs_processed": 7,
+  "docs_skipped": 0,
+  "chunks_created": 142,
+  "current_file": "08_cockroachdb_cloud.pdf",
+  "errors": [],
+  "vectors_in_collection": 142
+}
+```
+
+When finished: `"status": "done"`.
 
 ---
 
-## API
+## Other endpoints
 
 ```bash
 # Health
 curl http://localhost:8000/health | jq
 
 # Search
-curl "http://localhost:8000/search?q=MongoDB%20Atlas%20SLA&k=3" | jq
+curl "http://localhost:8000/search?q=MongoDB%20Atlas%20SLA%20encryption&k=3" | jq
 
-# Force re-ingest
-curl -X POST http://localhost:8000/ingest \
-  -H "Content-Type: application/json" \
-  -d '{"force": true}' | jq
-
-# List ingested documents
+# List indexed documents
 curl http://localhost:8000/documents | jq
+
+# PDFs (static)
+curl -I http://localhost:8080/01_aws_rds_aurora.pdf
 ```
 
 ---
@@ -45,15 +77,12 @@ curl http://localhost:8000/documents | jq
 ## Architecture
 
 ```
-┌─────────────┐       HTTP        ┌──────────────────┐
-│  chromadb   │ ◄──────────────── │       rag        │
-│  (vector)   │                   │  - http.server   │
-│  :8000      │                   │  - LangChain     │
-└─────────────┘                   │  - fastembed     │
-                                  │  - FastAPI       │
-                                  └────────┬─────────┘
-                                           │ volume
-                                  ../db_proposals (PDFs)
+Browser / curl
+      │
+      ├─ :8080  →  rag (Python http.server)  →  PDFs
+      │
+      └─ :8000  →  rag (FastAPI)
+                      │  LangChain parse / chunk / embed
+                      ▼
+                 chromadb :8000  (persisted volume)
 ```
-
-PDFs are mounted read-only from `../db_proposals`.

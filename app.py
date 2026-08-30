@@ -3,7 +3,12 @@
 RAG service:
   - Connects to remote ChromaDB container
   - LangChain: parse PDFs → chunk → embed (fastembed) → store
-  - Exposes /health, /ingest, /search, /documents
+  - Endpoints:
+      POST /index          – start indexing PDFs into ChromaDB
+      GET  /index/status   – indexing progress / result
+      GET  /health
+      GET|POST /search
+      GET  /documents
 """
 
 from __future__ import annotations
@@ -11,6 +16,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import threading
+import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
@@ -40,11 +47,26 @@ PORT = int(os.getenv("PORT", "8000"))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("rag")
 
-app = FastAPI(title="DB Providers RAG", version="2.0.0")
+app = FastAPI(title="DB Providers RAG", version="2.1.0")
 
 _embedder: Optional["FastEmbedEmbeddings"] = None
 _vs: Optional[Chroma] = None
-ingest_status: Dict[str, Any] = {"status": "idle", "message": "", "docs_processed": 0, "chunks": 0}
+_index_lock = threading.Lock()
+
+# Shared status object (thread-safe enough for this use-case)
+index_status: Dict[str, Any] = {
+    "status": "idle",          # idle | running | done | error
+    "message": "No indexing has been started yet",
+    "started_at": None,
+    "finished_at": None,
+    "force": False,
+    "total_pdfs": 0,
+    "docs_processed": 0,
+    "docs_skipped": 0,
+    "chunks_created": 0,
+    "current_file": None,
+    "errors": [],
+}
 
 
 class FastEmbedEmbeddings(Embeddings):
@@ -105,98 +127,126 @@ def load_and_chunk(pdf_path: Path, splitter: RecursiveCharacterTextSplitter) -> 
     return chunks
 
 
-def run_ingest(force: bool = False) -> Dict[str, Any]:
-    global ingest_status
-    ingest_status = {"status": "running", "message": "Starting...", "docs_processed": 0, "chunks": 0}
+def run_index(force: bool = False) -> None:
+    """Background worker that indexes all PDFs into ChromaDB."""
+    global index_status, _vs
 
-    if not PDF_DIR.exists():
-        ingest_status = {"status": "error", "message": f"PDF_DIR missing: {PDF_DIR}", "docs_processed": 0, "chunks": 0}
-        return ingest_status
+    if not _index_lock.acquire(blocking=False):
+        log.warning("Index already running – ignoring duplicate request")
+        return
 
-    pdfs = sorted(PDF_DIR.glob("*.pdf"))
-    if not pdfs:
-        ingest_status = {"status": "error", "message": "No PDFs found", "docs_processed": 0, "chunks": 0}
-        return ingest_status
+    try:
+        index_status = {
+            "status": "running",
+            "message": "Indexing started",
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "finished_at": None,
+            "force": force,
+            "total_pdfs": 0,
+            "docs_processed": 0,
+            "docs_skipped": 0,
+            "chunks_created": 0,
+            "current_file": None,
+            "errors": [],
+        }
 
-    vs = get_vectorstore()
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
-        length_function=len,
-        separators=["\n\n", "\n", ". ", " ", ""],
-    )
+        if not PDF_DIR.exists():
+            index_status.update({
+                "status": "error",
+                "message": f"PDF_DIR does not exist: {PDF_DIR}",
+                "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+            return
 
-    if force:
-        try:
-            client = get_chroma_client()
-            client.delete_collection(COLLECTION_NAME)
-            log.info("Deleted collection %s", COLLECTION_NAME)
-            # recreate
-            global _vs
-            _vs = None
-            vs = get_vectorstore()
-        except Exception as e:
-            log.warning("Could not delete collection: %s", e)
+        pdfs = sorted(PDF_DIR.glob("*.pdf"))
+        index_status["total_pdfs"] = len(pdfs)
 
-    existing = set()
-    if not force:
-        try:
-            sample = vs.get(include=["metadatas"], limit=20000)
-            for m in sample.get("metadatas") or []:
-                if m and "source_file" in m:
-                    existing.add(m["source_file"])
-        except Exception:
-            pass
+        if not pdfs:
+            index_status.update({
+                "status": "error",
+                "message": "No PDF files found",
+                "finished_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+            return
 
-    total_chunks = 0
-    docs_ok = 0
-    for pdf in pdfs:
-        if pdf.name in existing and not force:
-            log.info("Skip already-ingested %s", pdf.name)
-            continue
-        log.info("Processing %s", pdf.name)
-        chunks = load_and_chunk(pdf, splitter)
-        if not chunks:
-            continue
-        vs.add_documents(chunks)
-        total_chunks += len(chunks)
-        docs_ok += 1
+        # Optional: drop collection when force=true
+        if force:
+            try:
+                client = get_chroma_client()
+                client.delete_collection(COLLECTION_NAME)
+                log.info("Force=true → deleted collection '%s'", COLLECTION_NAME)
+                _vs = None
+            except Exception as e:
+                log.warning("Could not delete collection: %s", e)
 
-    ingest_status = {
-        "status": "done",
-        "message": f"Ingested {docs_ok} files, {total_chunks} chunks",
-        "docs_processed": docs_ok,
-        "chunks": total_chunks,
-    }
-    log.info(ingest_status["message"])
-    return ingest_status
+        vs = get_vectorstore()
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+            length_function=len,
+            separators=["\n\n", "\n", ". ", " ", ""],
+        )
+
+        # Collect already-indexed source files (unless force)
+        existing = set()
+        if not force:
+            try:
+                sample = vs.get(include=["metadatas"], limit=50000)
+                for m in sample.get("metadatas") or []:
+                    if m and "source_file" in m:
+                        existing.add(m["source_file"])
+            except Exception:
+                pass
+
+        for pdf in pdfs:
+            index_status["current_file"] = pdf.name
+
+            if pdf.name in existing and not force:
+                log.info("Skipping already-indexed %s", pdf.name)
+                index_status["docs_skipped"] += 1
+                continue
+
+            try:
+                log.info("Indexing %s ...", pdf.name)
+                chunks = load_and_chunk(pdf, splitter)
+                if not chunks:
+                    index_status["errors"].append(f"{pdf.name}: no text extracted")
+                    continue
+
+                vs.add_documents(chunks)
+                index_status["docs_processed"] += 1
+                index_status["chunks_created"] += len(chunks)
+                log.info("  → %d chunks stored", len(chunks))
+            except Exception as e:
+                msg = f"{pdf.name}: {e}"
+                log.exception(msg)
+                index_status["errors"].append(msg)
+
+        index_status["current_file"] = None
+        index_status["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        index_status["status"] = "done"
+        index_status["message"] = (
+            f"Indexed {index_status['docs_processed']} file(s), "
+            f"{index_status['chunks_created']} chunk(s); "
+            f"skipped {index_status['docs_skipped']}"
+        )
+        log.info(index_status["message"])
+
+    finally:
+        _index_lock.release()
 
 
-# ---------- API models ----------
+# ---------- Request / response models ----------
+class IndexRequest(BaseModel):
+    force: bool = Field(False, description="If true, drop collection and re-index everything")
+
+
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=1)
     k: int = Field(5, ge=1, le=30)
 
 
-class IngestRequest(BaseModel):
-    force: bool = False
-
-
 # ---------- Routes ----------
-@app.on_event("startup")
-def startup():
-    # Auto-ingest if collection is empty
-    try:
-        vs = get_vectorstore()
-        count = vs._collection.count()
-        log.info("Chroma collection has %d vectors", count)
-        if count == 0:
-            log.info("Empty collection → starting auto-ingest")
-            run_ingest(force=False)
-    except Exception as e:
-        log.warning("Startup ingest check failed: %s", e)
-
-
 @app.get("/health")
 def health():
     try:
@@ -214,16 +264,51 @@ def health():
             "pdf_dir": str(PDF_DIR),
             "pdf_count": pdf_count,
             "embed_model": EMBED_MODEL,
-            "ingest_status": ingest_status,
+            "index_status": index_status["status"],
         }
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
 
 
-@app.post("/ingest")
-def ingest(body: IngestRequest = IngestRequest(), background: BackgroundTasks = None):
-    result = run_ingest(force=body.force)
-    return result
+@app.post("/index")
+def start_index(body: IndexRequest = IndexRequest(), background_tasks: BackgroundTasks = None):
+    """
+    Start indexing all PDFs from PDF_DIR into ChromaDB.
+    Runs in background. Poll GET /index/status for progress.
+    """
+    if index_status["status"] == "running":
+        return {
+            "accepted": False,
+            "message": "Indexing is already running",
+            "status": index_status,
+        }
+
+    # Launch in background thread via FastAPI BackgroundTasks
+    background_tasks.add_task(run_index, body.force)
+
+    return {
+        "accepted": True,
+        "message": "Indexing started in background",
+        "force": body.force,
+        "status_url": "/index/status",
+    }
+
+
+@app.get("/index/status")
+def get_index_status():
+    """Return current indexing status and progress counters."""
+    # Enrich with live vector count when possible
+    vectors = None
+    try:
+        vs = get_vectorstore()
+        vectors = vs._collection.count()
+    except Exception:
+        pass
+
+    return {
+        **index_status,
+        "vectors_in_collection": vectors,
+    }
 
 
 @app.get("/search")
@@ -257,14 +342,18 @@ def _search(query: str, k: int):
 @app.get("/documents")
 def documents():
     vs = get_vectorstore()
-    sample = vs.get(include=["metadatas"], limit=20000)
-    files = {}
+    sample = vs.get(include=["metadatas"], limit=50000)
+    files: Dict[str, Any] = {}
     for m in sample.get("metadatas") or []:
         if not m:
             continue
         src = m.get("source_file")
         if src:
-            files.setdefault(src, {"source_file": src, "company_slug": m.get("company_slug"), "chunks": 0})
+            files.setdefault(src, {
+                "source_file": src,
+                "company_slug": m.get("company_slug"),
+                "chunks": 0,
+            })
             files[src]["chunks"] += 1
     return {"documents": list(files.values()), "total_files": len(files)}
 
