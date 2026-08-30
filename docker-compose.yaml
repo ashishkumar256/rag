@@ -57,7 +57,7 @@ services:
       HF_HOME: /data/hf_cache
       TRANSFORMERS_CACHE: /data/hf_cache
     volumes:
-      - ../db_proposals:/data/pdfs:ro
+      - ./db_proposals:/data/pdfs:ro
       - hf_cache:/data/hf_cache
     restart: unless-stopped
     healthcheck:
