@@ -1,6 +1,6 @@
 ###############################################################################
 # Two-container stack
-# 1. chromadb  – official Chroma vector database
+# 1. chromadb  – official Chroma vector database (data bind-mounted to host)
 # 2. rag       – http.server (PDFs) + LangChain parse/chunk/embed/store + search API
 ###############################################################################
 
@@ -18,7 +18,8 @@ services:
       ANONYMIZED_TELEMETRY: "FALSE"
       PERSIST_DIRECTORY: /chroma/chroma
     volumes:
-      - chroma_data:/chroma/chroma
+      # Bind-mount host folder so data is visible & survives container removal
+      - ./chroma_data:/chroma/chroma
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
@@ -29,9 +30,6 @@ services:
 
   # --------------------------------------------------------------------------
   # 2. RAG service
-  #    - serves PDFs via Python stdlib http.server (:8080)
-  #    - LangChain parse → chunk → embed → store into chromadb
-  #    - search API (:8000)
   # --------------------------------------------------------------------------
   rag:
     build: .
@@ -42,7 +40,7 @@ services:
         condition: service_healthy
     ports:
       - "8080:8080"          # PDF static server
-      - "8000:8000"          # Search / ingest API
+      - "8000:8000"          # Search / index API
     environment:
       PDF_DIR: /data/pdfs
       CHROMA_HOST: chromadb
@@ -58,7 +56,7 @@ services:
       TRANSFORMERS_CACHE: /data/hf_cache
     volumes:
       - ./db_proposals:/data/pdfs:ro
-      - hf_cache:/data/hf_cache
+      - ./hf_cache:/data/hf_cache
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -66,7 +64,3 @@ services:
       timeout: 10s
       retries: 5
       start_period: 90s
-
-volumes:
-  chroma_data:
-  hf_cache:

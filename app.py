@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
 RAG service:
-  - Connects to remote ChromaDB container
-  - LangChain: parse PDFs → chunk → embed (fastembed) → store
-  - Endpoints:
-      POST /index          – start indexing PDFs into ChromaDB
-      GET  /index/status   – indexing progress / result
-      GET  /health
-      GET|POST /search
-      GET  /documents
+  - LangChain: parse PDFs → chunk → embed (fastembed) → store in ChromaDB
+  - POST /index          – start indexing
+  - GET  /index/status   – indexing progress (handles 20k+ files)
+  - POST /ask            – natural language question → top matching chunks
+  - GET  /health
+  - GET  /documents
 """
 
 from __future__ import annotations
@@ -21,7 +19,7 @@ import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -43,19 +41,19 @@ CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "800"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
 HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
+DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "5"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("rag")
 
-app = FastAPI(title="DB Providers RAG", version="2.1.0")
+app = FastAPI(title="DB Providers RAG", version="2.2.0")
 
 _embedder: Optional["FastEmbedEmbeddings"] = None
 _vs: Optional[Chroma] = None
 _index_lock = threading.Lock()
 
-# Shared status object (thread-safe enough for this use-case)
 index_status: Dict[str, Any] = {
-    "status": "idle",          # idle | running | done | error
+    "status": "idle",
     "message": "No indexing has been started yet",
     "started_at": None,
     "finished_at": None,
@@ -128,7 +126,6 @@ def load_and_chunk(pdf_path: Path, splitter: RecursiveCharacterTextSplitter) -> 
 
 
 def run_index(force: bool = False) -> None:
-    """Background worker that indexes all PDFs into ChromaDB."""
     global index_status, _vs
 
     if not _index_lock.acquire(blocking=False):
@@ -169,7 +166,6 @@ def run_index(force: bool = False) -> None:
             })
             return
 
-        # Optional: drop collection when force=true
         if force:
             try:
                 client = get_chroma_client()
@@ -187,7 +183,6 @@ def run_index(force: bool = False) -> None:
             separators=["\n\n", "\n", ". ", " ", ""],
         )
 
-        # Collect already-indexed source files (unless force)
         existing = set()
         if not force:
             try:
@@ -236,14 +231,14 @@ def run_index(force: bool = False) -> None:
         _index_lock.release()
 
 
-# ---------- Request / response models ----------
+# ---------- Models ----------
 class IndexRequest(BaseModel):
     force: bool = Field(False, description="If true, drop collection and re-index everything")
 
 
-class SearchRequest(BaseModel):
-    query: str = Field(..., min_length=1)
-    k: int = Field(5, ge=1, le=30)
+class AskRequest(BaseModel):
+    question: str = Field(..., min_length=1, description="Natural language question")
+    k: int = Field(DEFAULT_TOP_K, ge=1, le=30, description="Number of chunks to retrieve")
 
 
 # ---------- Routes ----------
@@ -272,10 +267,7 @@ def health():
 
 @app.post("/index")
 def start_index(body: IndexRequest = IndexRequest(), background_tasks: BackgroundTasks = None):
-    """
-    Start indexing all PDFs from PDF_DIR into ChromaDB.
-    Runs in background. Poll GET /index/status for progress.
-    """
+    """Start indexing all PDFs into ChromaDB (runs in background)."""
     if index_status["status"] == "running":
         return {
             "accepted": False,
@@ -283,9 +275,7 @@ def start_index(body: IndexRequest = IndexRequest(), background_tasks: Backgroun
             "status": index_status,
         }
 
-    # Launch in background thread via FastAPI BackgroundTasks
     background_tasks.add_task(run_index, body.force)
-
     return {
         "accepted": True,
         "message": "Indexing started in background",
@@ -297,7 +287,6 @@ def start_index(body: IndexRequest = IndexRequest(), background_tasks: Backgroun
 @app.get("/index/status")
 def get_index_status():
     """Return current indexing status and progress counters."""
-    # Enrich with live vector count when possible
     vectors = None
     try:
         vs = get_vectorstore()
@@ -311,32 +300,43 @@ def get_index_status():
     }
 
 
-@app.get("/search")
-def search_get(q: str = Query(..., min_length=1), k: int = Query(5, ge=1, le=30)):
-    return _search(q, k)
+@app.post("/ask")
+def ask(body: AskRequest):
+    """
+    Natural language question → retrieve top matching chunks from ChromaDB.
+    Ready for later LLM integration (chunks are returned as context).
+    """
+    question = body.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question must not be empty")
 
+    try:
+        vs = get_vectorstore()
+        results = vs.similarity_search_with_score(question, k=body.k)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Search failed: {e}")
 
-@app.post("/search")
-def search_post(body: SearchRequest):
-    return _search(body.query, body.k)
-
-
-def _search(query: str, k: int):
-    vs = get_vectorstore()
-    results = vs.similarity_search_with_score(query, k=k)
-    hits = []
+    contexts = []
     for rank, (doc, dist) in enumerate(results, 1):
         meta = doc.metadata or {}
-        hits.append({
+        contexts.append({
             "rank": rank,
-            "score": float(1.0 - dist) if dist <= 1 else float(dist),
+            "score": round(float(1.0 - dist) if dist <= 1 else float(dist), 4),
             "text": doc.page_content,
             "source_file": meta.get("source_file"),
             "company_slug": meta.get("company_slug"),
             "page": meta.get("page"),
             "chunk_index": meta.get("chunk_index"),
         })
-    return {"query": query, "k": k, "results": hits}
+
+    return {
+        "question": question,
+        "k": body.k,
+        "contexts": contexts,
+        # Placeholder for future LLM answer
+        "answer": None,
+        "note": "Retrieval only. LLM answer integration can be added later.",
+    }
 
 
 @app.get("/documents")
