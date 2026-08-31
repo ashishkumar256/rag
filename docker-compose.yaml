@@ -52,7 +52,7 @@ services:
       PDF_PORT: ${PDF_PORT}
       DEBUG: ${DEBUG}
     volumes:
-      - ./db_proposals:/data/pdfs:ro
+      - ./runbook:/data/pdfs:ro
       - ./hf_cache:/data/hf_cache
     restart: unless-stopped
     healthcheck:
