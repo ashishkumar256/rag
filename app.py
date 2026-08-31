@@ -43,6 +43,7 @@ CHUNK_OVERLAP = int(os.environ["CHUNK_OVERLAP"])
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8000"))
 DEFAULT_TOP_K = int(os.environ["DEFAULT_TOP_K"])
+MIN_SCORE = float(os.environ.get("MIN_SCORE", "0.5"))
 DEFAULT_DEBUG = os.environ.get("DEBUG", "false").strip().lower() in ("1", "true", "yes", "on")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -346,7 +347,7 @@ def ask(body: AskRequest):
         raise HTTPException(status_code=503, detail=f"Search failed: {e}")
 
     contexts = []
-    for rank, (doc, dist) in enumerate(results, 1):
+    for doc, dist in results:
         meta = doc.metadata or {}
         # LangChain+Chroma cosine: distance is cosine distance in [0, 2] typically;
         # convert to a similarity-like score where higher = more relevant.
@@ -356,8 +357,11 @@ def ask(body: AskRequest):
             dist_f = 0.0
         score = round(1.0 - dist_f, 4) if dist_f <= 1.0 else round(float(1.0 / (1.0 + dist_f)), 4)
 
+        # Drop weak matches to reduce noise
+        if score < MIN_SCORE:
+            continue
+
         contexts.append({
-            "rank": rank,
             "score": score,
             "text": doc.page_content,
             "source_file": meta.get("source_file"),
@@ -365,6 +369,10 @@ def ask(body: AskRequest):
             "page": meta.get("page"),
             "chunk_index": meta.get("chunk_index"),
         })
+
+    # Re-number rank after filtering
+    for i, ctx in enumerate(contexts, 1):
+        ctx["rank"] = i
 
     resp = {
         "contexts": contexts,

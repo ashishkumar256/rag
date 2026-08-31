@@ -46,6 +46,7 @@ services:
       CHUNK_SIZE: ${CHUNK_SIZE}
       CHUNK_OVERLAP: ${CHUNK_OVERLAP}
       DEFAULT_TOP_K: ${DEFAULT_TOP_K}
+      MIN_SCORE: ${MIN_SCORE}
       HOST: ${HOST}
       PORT: ${PORT}
       PDF_PORT: ${PDF_PORT}
