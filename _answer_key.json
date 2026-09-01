@@ -1,0 +1,207 @@
+{
+  "description": "Nexlify runbooks RAG evaluation set – Option 6. Questions are natural language; expected_facts are substrings that must appear in a retrieved context for the question to be considered a hit.",
+  "min_score_used_by_service": 0.5,
+  "default_top_k": 5,
+  "questions": [
+    {
+      "id": "Q01",
+      "question": "terraform state files stored in which bucket?",
+      "expected_facts": ["nexlify-tfstate-ap-south-1", "s3://nexlify-tfstate"],
+      "source_file": "03_Terraform_Atlantis_Governance.pdf",
+      "category": "identifier",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q02",
+      "question": "What is the cidr of subnet-nonprod-pvt-1b?",
+      "expected_facts": ["10.50.32.0/20"],
+      "source_file": "02_AWS_VPC_Design_Operational_Networking.pdf",
+      "category": "identifier",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q03",
+      "question": "What is the CIDR of the non-production VPC?",
+      "expected_facts": ["10.50.0.0/16"],
+      "source_file": "02_AWS_VPC_Design_Operational_Networking.pdf",
+      "category": "identifier",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q04",
+      "question": "Which availability zone is preferred for stateful workloads?",
+      "expected_facts": ["ap-south-1a"],
+      "source_file": "01_AWS_Basic_Foundations_Security.pdf",
+      "category": "semantic",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q05",
+      "question": "Is HPA used for application workloads in non-production?",
+      "expected_facts": ["not created for application workloads", "No Horizontal Pod Autoscaler", "HPA", "replica counts remain fixed"],
+      "source_file": "06_K8s_Best_Practices_NonProd.pdf",
+      "category": "semantic",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q06",
+      "question": "Are PodDisruptionBudgets required in non-prod?",
+      "expected_facts": ["PodDisruptionBudgets are omitted", "PDB", "omitted"],
+      "source_file": "06_K8s_Best_Practices_NonProd.pdf",
+      "category": "semantic",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q07",
+      "question": "What Spot to on-demand ratio is targeted in production?",
+      "expected_facts": ["70", "30", "seventy percent Spot", "30%"],
+      "source_file": "07_K8s_Best_Practices_Prod.pdf",
+      "category": "semantic",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q08",
+      "question": "Where does Atlantis run?",
+      "expected_facts": ["shared-services EKS", "self-hosted on the shared-services"],
+      "source_file": "03_Terraform_Atlantis_Governance.pdf",
+      "category": "semantic",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q09",
+      "question": "What DynamoDB table is used for Terraform state locking?",
+      "expected_facts": ["nexlify-tf-locks"],
+      "source_file": "03_Terraform_Atlantis_Governance.pdf",
+      "category": "identifier",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q10",
+      "question": "What is the primary region for Nexlify workloads?",
+      "expected_facts": ["ap-south-1"],
+      "source_file": "01_AWS_Basic_Foundations_Security.pdf",
+      "category": "identifier",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q11",
+      "question": "Can resources be created in the default VPC?",
+      "expected_facts": ["No", "not permitted", "DenyDefaultVPC", "quarantined", "default VPC"],
+      "source_file": "02_AWS_VPC_Design_Operational_Networking.pdf",
+      "category": "semantic",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q12",
+      "question": "What probe timings are recommended for non-production?",
+      "expected_facts": ["initialDelaySeconds is set to 5", "periodSeconds to 5", "timeoutSeconds to 2", "failureThreshold to 3"],
+      "source_file": "06_K8s_Best_Practices_NonProd.pdf",
+      "category": "identifier",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q13",
+      "question": "Which Karpenter NodePool is for memory intensive pods?",
+      "expected_facts": ["memory-optimised", "memory-optimized", "r6i", "r7i"],
+      "source_file": "05_Karpenter_Node_Provisioning.pdf",
+      "category": "semantic",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q14",
+      "question": "Is Spot capacity used in non-production clusters?",
+      "expected_facts": ["Spot", "100%", "exclusively", "capacity-type: spot", "Spot-only"],
+      "source_file": "06_K8s_Best_Practices_NonProd.pdf",
+      "category": "semantic",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q15",
+      "question": "What is the production EKS cluster name?",
+      "expected_facts": ["nexlify-prod-eks"],
+      "source_file": "04_EKS_Control_Plane_Addons.pdf",
+      "category": "identifier",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q16",
+      "question": "How is mutual TLS configured in the service mesh?",
+      "expected_facts": ["STRICT", "PeerAuthentication", "mTLS"],
+      "source_file": "10_Service_Mesh_mTLS_Traffic_Resilience.pdf",
+      "category": "semantic",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q17",
+      "question": "What is the CIDR of subnet-nonprod-pub-1a?",
+      "expected_facts": ["10.50.0.0/22"],
+      "source_file": "02_AWS_VPC_Design_Operational_Networking.pdf",
+      "category": "identifier",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q18",
+      "question": "Does production require a PodDisruptionBudget?",
+      "expected_facts": ["PDB is mandatory", "PodDisruptionBudget is mandatory", "mandatory for every production"],
+      "source_file": "07_K8s_Best_Practices_Prod.pdf",
+      "category": "semantic",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q19",
+      "question": "What resource buffer is added to production pod requests?",
+      "expected_facts": ["10%", "ten-percent", "ten percent"],
+      "source_file": "07_K8s_Best_Practices_Prod.pdf",
+      "category": "identifier",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q20",
+      "question": "Where are CloudTrail logs delivered?",
+      "expected_facts": ["nexlify-cloudtrail-ap-south-1", "s3://nexlify-cloudtrail"],
+      "source_file": "01_AWS_Basic_Foundations_Security.pdf",
+      "category": "identifier",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q21",
+      "question": "What authentication methods does Kong support?",
+      "expected_facts": ["key-auth", "jwt", "oidc", "openid-connect"],
+      "source_file": "09_Kong_Ingress_Controller.pdf",
+      "category": "semantic",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q22",
+      "question": "Name of the external NGINX ingress class?",
+      "expected_facts": ["nginx-external"],
+      "source_file": "08_NGINX_Ingress_Internal_External.pdf",
+      "category": "identifier",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q23",
+      "question": "Is on-demand fallback enabled for non-prod Karpenter NodePools?",
+      "expected_facts": ["disabled", "Spot capacity exclusively", "does not list on-demand"],
+      "source_file": "05_Karpenter_Node_Provisioning.pdf",
+      "category": "semantic",
+      "difficulty": "medium"
+    },
+    {
+      "id": "Q24",
+      "question": "What is the target image size for non-prod containers?",
+      "expected_facts": ["150 megabytes", "150 MB", "under 150"],
+      "source_file": "06_K8s_Best_Practices_NonProd.pdf",
+      "category": "identifier",
+      "difficulty": "easy"
+    },
+    {
+      "id": "Q25",
+      "question": "Which Slack channel is used for Terraform drift alerts?",
+      "expected_facts": ["#platform-drift", "platform-drift"],
+      "source_file": "03_Terraform_Atlantis_Governance.pdf",
+      "category": "identifier",
+      "difficulty": "easy"
+    }
+  ]
+}
