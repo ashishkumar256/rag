@@ -3,9 +3,17 @@
 RAG evaluation runner (Option 6).
 
 Usage:
-  python run_rag_eval.py                          # against http://localhost:8000
-  python run_rag_eval.py --base-url http://localhost:8000 --k 5
-  python run_rag_eval.py --min-score-override 0.0  # see everything the service returns before filter
+  # against http://localhost:8000
+  python3 rag_eval.py
+
+  # with custom base URL and top-k
+  python3 rag_eval.py --base-url http://localhost:8000 --k 5
+
+  # see everything the service returns before filter
+  python3 rag_eval.py --min-score-override 0.0
+
+  # optional: save full per-question detail
+  python3 rag_eval.py --base-url http://localhost:8000 --k 5 --json-out eval_results.json
 
 Measures:
   - hit@1  : expected fact appears in rank-1 context
